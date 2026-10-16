@@ -9,6 +9,19 @@ A normal webcam, Google's MediaPipe face tracking at 60 fps, smart filtering, pe
 curves, and a tiny DCS hook that drives the cockpit view directly. Press one button and DCS's own
 **mouse look** takes over; press it again and your head has the view back.
 
+## Why this exists
+
+With TrackIR-style head tracking (TrackIR, opentrack, ...) DCS switches into "TrackIR mode" for the
+whole session, and **its mouse look stops working in the cockpit**. Pausing the tracker only freezes
+the view - you still cannot use the mouse to look at the awkward places: low behind the seat, a panel
+down by your knee, a switch behind your shoulder - spots your neck can't comfortably reach.
+
+DCS-CamTrack was created to fix exactly that. It does not use the TrackIR interface at all, so DCS
+never enters TrackIR mode: press **Pause** and DCS's own mouse look is back instantly, look wherever
+you need, press Pause again and your head drives the view again.
+
+## How it fits together
+
 ```
 webcam ──60 fps──▶ MediaPipe face landmarks ──▶ head pose ──▶ filter + prediction ──▶ curves
                                                                                         │
