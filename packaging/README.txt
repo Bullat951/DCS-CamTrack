@@ -1,6 +1,9 @@
 Head Tracker - webcam head tracking for DCS World (no TrackIR, no opentrack, no drivers)
 =======================================================================================
 
+WORK IN PROGRESS - this is not a final version; filters and defaults are still being developed.
+Written with the help of Claude, an AI assistant by Anthropic.
+
 What you need: Windows 10 / 11 (64-bit), a webcam, DCS World. Nothing to install.
 
 1. Unzip this folder anywhere and double-click "Head Tracker.exe".

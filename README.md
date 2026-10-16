@@ -1,5 +1,8 @@
 # DCS-CamTrack
 
+> **Work in progress - this is not a final version.** It works well on the author's PC, but filters,
+> defaults and setup are still being developed and may change. Feedback and test reports are welcome.
+
 Webcam head tracking for **DCS World** - no TrackIR, no opentrack, no vJoy, no drivers.
 
 A normal webcam, Google's MediaPipe face tracking at 60 fps, smart filtering, per-axis response
@@ -83,6 +86,11 @@ Lua: `"<DCS>\bin\luae.exe" tests\dcs_hook_test.lua dcs\HeadTracker-hook.lua`. `t
 
 Tested on one PC (Logitech BRIO, DCS 2.9.30, CH-47F / JF-17 / F/A-18C). Multiplayer, other cameras and
 other PCs: reports welcome. 90 fps capture is experimental.
+
+## Acknowledgements
+
+This project was written with the help of **Claude**, an AI assistant by Anthropic - code, tests and
+documentation were developed together with it, and tested by the author in DCS.
 
 ## License
 
