@@ -1,0 +1,17 @@
+# Runtime (Python 3.14, Windows 64-bit). Install into a venv:  python -m venv .venv  &&  .venv\Scripts\pip install -r requirements.txt
+mediapipe==1.1.1
+opencv-python==5.0.0.93
+numpy==2.5.4
+pillow==12.3.0
+pygrabber==0.2
+winrt-runtime==3.2.1
+winrt-Windows.Devices.Enumeration==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.Graphics.Imaging==3.2.1
+winrt-Windows.Media==3.2.1
+winrt-Windows.Media.Capture==3.2.1
+winrt-Windows.Media.Capture.Frames==3.2.1
+winrt-Windows.Media.Devices==3.2.1
+winrt-Windows.Media.MediaProperties==3.2.1
+winrt-Windows.Storage.Streams==3.2.1

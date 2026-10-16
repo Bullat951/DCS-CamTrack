@@ -1,0 +1,17 @@
+# environment / build output
+.venv/
+__pycache__/
+*.pyc
+packaging/build/
+packaging/dist/
+packaging/out/
+/Head Tracker.exe
+logs/
+
+# personal data (lives in %APPDATA%\HeadTracker; older dev copies here)
+settings.json
+test_results.txt
+models/personal_face.npz
+
+# private working notes
+PLAN-*.md
