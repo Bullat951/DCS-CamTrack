@@ -20,6 +20,7 @@ What you need: Windows 10 / 11 (64-bit), a webcam, DCS World. Nothing to install
    copies your opentrack curves.
 
 Your settings live in %APPDATA%\HeadTracker (a new version in a new folder keeps them).
-Problems: %APPDATA%\HeadTracker\ui.log
+Problems: Setup tab -> tick "Write a debug log", restart Head Tracker, reproduce the problem, close it,
+then "Open log folder" and send the newest debug-*.log. Crashes: %APPDATA%\HeadTracker\ui.log
 
 To remove: delete this folder, %APPDATA%\HeadTracker and Saved Games\DCS\Scripts\Hooks\HeadTracker-hook.lua.

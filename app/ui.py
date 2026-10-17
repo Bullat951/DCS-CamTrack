@@ -31,7 +31,7 @@ from appdirs import data_dir, frozen  # noqa: E402
 from curve_editor import CurveEditor  # noqa: E402
 from devices import MODES, dcs_folders, list_cameras, mode_label  # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.1.5"
 from curves import AXES as CURVE_AXES, import_opentrack, merged  # noqa: E402
 from dcsout import default_dcs_folder, hook_state, install_hook  # noqa: E402
 from debuglog import dcs_log_lines, dlog, system_header  # noqa: E402
@@ -157,7 +157,8 @@ class App:
         row = tk.Frame(f, bg=PANEL)
         row.pack(anchor="w", padx=6)
         self.fps = tk.IntVar(value=int(self.s["camera"]["fps"]))
-        ttk.Radiobutton(row, text="60 fps (stable)", value=60, variable=self.fps, command=self.set_camera).pack(side="left")
+        ttk.Radiobutton(row, text="30 fps", value=30, variable=self.fps, command=self.set_camera).pack(side="left")
+        ttk.Radiobutton(row, text="60 fps (stable)", value=60, variable=self.fps, command=self.set_camera).pack(side="left", padx=(8, 0))
         ttk.Radiobutton(row, text="90 fps (experimental: 30-90, exposure -7 or shorter)", value=90, variable=self.fps,
                         command=self.set_camera).pack(side="left", padx=(8, 0))
         self.lock = tk.BooleanVar(value=self.s["camera"]["lock"])
@@ -276,6 +277,7 @@ class App:
         self.status.config(text="opening camera...", fg=WARN)
         self.root.update_idletasks()
         ok = self.engine.set_camera(name=self.cam_name.get(), width=w, height=h, fps=fps)
+        self.fps.set(fps)      # the Tracking tab's fps too - else its next change reopens at its old rate
         self.cam_info.config(text="ok" if ok else "could not open - try another mode", fg=ACCENT if ok else BAD)
 
     def browse_dcs(self):
