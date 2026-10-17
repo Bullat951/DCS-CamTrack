@@ -268,5 +268,52 @@ class DebugLogTest(unittest.TestCase):
         self.assertEqual(dcs_log_lines(self.dir / "missing"), [])
 
 
+class CameraOpenTest(unittest.TestCase):
+    """Fallback DirectShow -> Media Foundation, with the attempts recorded (no real camera)."""
+
+    def setUp(self):
+        import camera
+        import cv2
+
+        class Cap:
+            works: set = set()               # backends that open
+
+            def __init__(self, index, backend, params=None):
+                self.ok = backend in Cap.works
+
+            def isOpened(self): return self.ok
+            def set(self, *a): return True
+            def get(self, prop): return 0.0
+            def read(self): return False, None
+            def release(self): self.ok = False
+
+        self.camera, self.Cap, self.cv2 = camera, Cap, cv2
+        real = camera.cv2.VideoCapture
+        camera.cv2.VideoCapture = Cap
+        self.addCleanup(setattr, camera.cv2, "VideoCapture", real)
+
+    def test_falls_back_to_media_foundation(self):
+        self.Cap.works = {self.cv2.CAP_MSMF}
+        cam = self.camera.Camera(fps=30)
+        self.assertTrue(cam.open())
+        cam.close()
+        self.assertEqual(cam.attempts, ["DirectShow index 0: not opened", "Media Foundation index 0: opened"])
+
+    def test_both_fail_then_a_later_set_retries(self):
+        self.Cap.works = set()
+        cam = self.camera.Camera(fps=30)
+        self.assertFalse(cam.open())
+        self.assertEqual(len(cam.attempts), 2)
+        self.Cap.works = {self.cv2.CAP_DSHOW}             # the other program let the camera go
+        self.assertTrue(cam.set())                         # no change, but no camera yet -> reopens
+        cam.close()
+        self.assertEqual(cam.attempts, ["DirectShow index 0: opened"])
+
+    def test_privacy_blocks(self):
+        from devices import privacy_blocks
+        self.assertEqual(privacy_blocks({"device": None, "user": "Allow", "desktop_apps": "Deny"}), ["desktop_apps"])
+        self.assertEqual(privacy_blocks({"device": None, "user": None, "desktop_apps": None}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

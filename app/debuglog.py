@@ -170,6 +170,11 @@ def system_header(version: str, settings: dict) -> list[str]:
     except Exception as e:
         out.append("cameras: probe failed %r" % e)
     try:
+        from devices import camera_privacy
+        out.append("camera privacy (None = not set = allowed): %s" % camera_privacy())
+    except Exception as e:
+        out.append("camera privacy: probe failed %r" % e)
+    try:
         from dcsout import default_dcs_folder, hook_state
         from devices import dcs_folders
         out.append("dcs folders: %s" % (", ".join(str(p) for p in dcs_folders()) or "none"))

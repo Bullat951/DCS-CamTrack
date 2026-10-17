@@ -21,7 +21,7 @@ from tracker import FaceTracker
 
 from appdirs import data_dir, migrate_dev_data
 from debuglog import dlog
-from devices import camera_index
+from devices import camera_index, camera_privacy, privacy_blocks
 
 migrate_dev_data()
 DATA = data_dir()
@@ -70,6 +70,19 @@ def save_settings(s: dict) -> None:
     SETTINGS.write_text(json.dumps(s, indent=2), encoding="utf-8")
 
 
+def camera_error() -> str:
+    """Why the camera did not open, in words the user can act on."""
+    try:
+        blocked = privacy_blocks(camera_privacy())
+    except Exception:
+        blocked = []
+    if blocked:
+        return ("Windows camera privacy blocks it: Settings > Privacy & security > Camera - turn on 'Camera access' "
+                "and 'Let desktop apps access your camera'")
+    return ("Camera could not be opened - close other programs using it (OBS, Discord, Teams, Zoom, a browser, "
+            "the Camera app, opentrack) - retrying every 5 s")
+
+
 def pose_matrix(rot: np.ndarray, m_mp: np.ndarray) -> np.ndarray:
     """4x4 with the given rotation and MediaPipe's translation (cm)."""
     out = np.eye(4)
@@ -96,8 +109,10 @@ class Engine(threading.Thread):
         cam_cfg["index"] = camera_index(cam_cfg.get("name", ""), int(cam_cfg.get("index", 0)))
         self.cam = Camera(**cam_cfg)
         self.cam_ok = self.cam.open()
-        print("engine: camera %s (index %s) open=%s info=%s, output=%s" % (
-            cam_cfg.get("name") or "-", cam_cfg["index"], self.cam_ok, self.cam.info, settings.get("output")), flush=True)
+        print("engine: camera %s (index %s) open=%s info=%s, output=%s; tried: %s" % (
+            cam_cfg.get("name") or "-", cam_cfg["index"], self.cam_ok, self.cam.info, settings.get("output"),
+            "; ".join(self.cam.attempts)), flush=True)
+        self.error = "" if self.cam_ok else camera_error()
         self._cam_lock = threading.Lock()
         self.paused = False
         self.dcs = DcsOutput()
@@ -118,7 +133,20 @@ class Engine(threading.Thread):
                 kw["index"] = camera_index(kw["name"], int(self.s["camera"].get("index", 0)))
             self.cam_ok = self.cam.set(**kw)
             self.s["camera"].update(kw)
-            dlog.event("camera set %s -> open=%s info=%s" % (kw, self.cam_ok, self.cam.info))
+            self.error = "" if self.cam_ok else camera_error()
+            dlog.event("camera set %s -> open=%s info=%s, tried: %s" % (kw, self.cam_ok, self.cam.info,
+                                                                        "; ".join(self.cam.attempts)))
+            return self.cam_ok
+
+    def retry_camera(self) -> bool:
+        """MAIN thread: try the camera again after a failed open (another program let it go)."""
+        with self._cam_lock:
+            if self.cam_ok:
+                return True
+            self.cam_ok = self.cam.set()
+            self.error = "" if self.cam_ok else camera_error()
+            if self.cam_ok:
+                dlog.event("camera retry: opened (%s) info=%s" % ("; ".join(self.cam.attempts), self.cam.info))
             return self.cam_ok
 
     def stop(self):
@@ -129,11 +157,13 @@ class Engine(threading.Thread):
         s = self.s
         cam = self.cam
         if not self.cam_ok:
-            self.error = "Camera not available - is another tracker (opentrack NeuralNet?) using it?"
-            with self._lock:
-                self._snap = {"status": "NO CAMERA", "error": self.error}
-            dlog.event("engine: " + self.error)
-            return
+            dlog.event("engine: no camera - " + self.error)
+            while not self.cam_ok and not self._stop.is_set():      # the UI retries the open (main thread)
+                with self._lock:
+                    self._snap = {"status": "NO CAMERA", "error": self.error}
+                time.sleep(0.2)
+            if self._stop.is_set():
+                return
         tracker = FaceTracker()
         flt = PoseFilter(rot=tuple(s["filter"]["rot"]), pos=tuple(s["filter"]["pos"]))
         pred = Predictor(lead_ms=s["predict_ms"])

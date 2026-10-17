@@ -67,3 +67,26 @@ def dcs_folders() -> list[Path]:
     except OSError:
         pass
     return out
+
+
+# ---------------------------------------------------------------- camera privacy
+_CONSENT = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+
+
+def camera_privacy() -> dict:
+    """Windows' camera privacy switches: {'device': .., 'user': .., 'desktop_apps': ..} = 'Allow' / 'Deny' / None
+    (None = not set = allowed). 'desktop_apps' is 'Let desktop apps access your camera' - this program's switch."""
+    import winreg
+    out = {}
+    for key, hive, sub in (("device", winreg.HKEY_LOCAL_MACHINE, _CONSENT), ("user", winreg.HKEY_CURRENT_USER, _CONSENT),
+                           ("desktop_apps", winreg.HKEY_CURRENT_USER, _CONSENT + r"\NonPackaged")):
+        try:
+            with winreg.OpenKey(hive, sub) as k:
+                out[key] = str(winreg.QueryValueEx(k, "Value")[0])
+        except OSError:
+            out[key] = None
+    return out
+
+
+def privacy_blocks(p: dict) -> list[str]:
+    return [k for k, v in p.items() if (v or "").lower() == "deny"]

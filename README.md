@@ -72,6 +72,9 @@ If an axis moves the wrong way, tick **Invert in DCS** for it. *Full scale* is h
   - automatic exposure / focus hunting is a big jitter source.
 - **Camera position**: at or a little below eye level tracks looking down best.
 - **Still test** (Tracking tab) measures jitter in your head pose and in the DCS view.
+- **NO CAMERA**: another program holds the camera (OBS with the camera as a source, Discord, Teams, Zoom,
+  a browser tab, the Windows Camera app) - close it, Head Tracker retries every 5 s. Or Windows blocks it:
+  Settings > Privacy & security > Camera - turn on *Camera access* and *Let desktop apps access your camera*.
 - **Problems**: turn on the **debug log** (Setup tab -> *Write a debug log*), restart Head Tracker,
   reproduce the problem, close Head Tracker and send the newest file from **Open log folder**
   (`%APPDATA%\HeadTracker\debug\debug-<date>-<time>.log`, the last 5 are kept). It has the PC, cameras,

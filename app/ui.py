@@ -26,12 +26,13 @@ from PIL import Image, ImageTk
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import json  # noqa: E402
+import time  # noqa: E402
 
 from appdirs import data_dir, frozen  # noqa: E402
 from curve_editor import CurveEditor  # noqa: E402
 from devices import MODES, dcs_folders, list_cameras, mode_label  # noqa: E402
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 from curves import AXES as CURVE_AXES, import_opentrack, merged  # noqa: E402
 from dcsout import default_dcs_folder, hook_state, install_hook  # noqa: E402
 from debuglog import dcs_log_lines, dlog, system_header  # noqa: E402
@@ -90,7 +91,8 @@ class App:
         self.build_setup_tab(setup_tab)
         tabs.select(right if self.s["camera"].get("name") else setup_tab)   # first run: Setup
 
-        self.status = tk.Label(left, text="starting...", bg=BG, fg=MUTED, font=("Segoe UI", 12, "bold"), anchor="w")
+        self.status = tk.Label(left, text="starting...", bg=BG, fg=MUTED, font=("Segoe UI", 12, "bold"), anchor="w",
+                               justify="left", wraplength=640)
         self.status.pack(fill="x")
         self.video = tk.Label(left, bg="#000")
         self.video.pack()
@@ -514,9 +516,18 @@ class App:
 
     # ---------------------------------------------------------------- refresh
     def tick(self):
+        if not self.engine.cam_ok:
+            # failed open: try again every 5 s (main thread - DirectShow) so closing OBS / a call app is enough
+            now = time.monotonic()
+            if now >= getattr(self, "_cam_retry", 0.0):
+                self._cam_retry = now + 5.0
+                self.engine.retry_camera()
         snap = self.engine.snapshot()
         st = snap.get("status", "")
-        self.status.config(text=st + ("  -  " + snap["error"] if snap.get("error") else ""),
+        err = snap.get("error") or ("" if self.engine.cam_ok else self.engine.error)
+        if err and st != "NO CAMERA":
+            st = "NO CAMERA"
+        self.status.config(text=st + ("  -  " + err if err else ""),
                            fg={"TRACKING": ACCENT, "HOLD": WARN}.get(st, BAD if st in ("LOST", "NO CAMERA") else MUTED))
         frame = snap.get("frame")
         if frame is not None:
