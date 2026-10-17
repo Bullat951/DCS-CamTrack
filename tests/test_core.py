@@ -146,6 +146,37 @@ class OutputPumpTest(unittest.TestCase):
         self.assertGreater(got[-1][1], 25)                    # keeps up with the turn
 
 
+class AccelaTest(unittest.TestCase):
+    def run_acc(self, signal, hz=240, **kw):
+        from filters import Accela
+        a = Accela(**kw)
+        return [a.step({"yaw": v, "x": 0.0}, 1 / hz)["yaw"] for v in signal]
+
+    def test_tremble_is_smeared_not_passed(self):
+        random.seed(7)
+        # 60 Hz camera noise +-0.15 deg, held for 4 frames each at 240 Hz (like the pump)
+        cam = [random.gauss(0, 0.15) for _ in range(600)]
+        sig = [cam[i // 4] for i in range(2400)]
+        out = self.run_acc(sig)
+        self.assertLess(rms_about_mean(out[240:]), 0.25 * rms_about_mean(sig[240:]))
+
+    def test_small_real_move_arrives_not_sticky(self):
+        out = self.run_acc([0.0] + [0.6] * 240 * 4)                 # a 0.6 deg move, 4 s
+        self.assertGreater(out[-1], 0.5)                            # reaches it (the gate would block 0.2 of it)
+        self.assertLessEqual(max(out), 0.6 + 1e-9)                  # never overshoots
+
+    def test_fast_turn_catches_up(self):
+        turn = [min(60.0, 200.0 * i / 240) for i in range(240)]   # 200 deg/s to 60 deg
+        out = self.run_acc(turn)
+        self.assertGreater(out[-1], 55.0)                           # within ~5 deg after 1 s
+        self.assertTrue(all(o <= t + 1e-9 for o, t in zip(out, turn)))   # always behind, never ahead
+
+    def test_gain_table_continues_past_the_end(self):
+        from filters import Accela
+        self.assertAlmostEqual(Accela._gain(Accela.ROT_GAINS, 1.0), 1.5)
+        self.assertGreater(Accela._gain(Accela.ROT_GAINS, 12.0), 300.0)
+
+
 class OutputTest(unittest.TestCase):
     def test_opentrack_packet(self):
         b = pack({"x": 1, "y": 2, "z": 3, "yaw": 4, "pitch": 5, "roll": 6})
@@ -179,6 +210,62 @@ class StillTestTest(unittest.TestCase):
         self.assertIsNotNone(st.result)
         self.assertGreater(st.result["raw"]["yaw"], 0)
         self.assertFalse(st.running)
+
+
+class DebugLogTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_writes_header_events_and_printed_output(self):
+        from debuglog import DebugLog
+        log = DebugLog()
+        self.assertFalse(log.enabled)
+        log.event("ignored while off")                      # no file, no error
+        path = log.start(["app 9.9"], folder=self.dir)
+        try:
+            log.event("command centre")
+            print("engine: first camera frame (720, 1280, 3)")
+            sys.stderr.write("Traceback: boom")             # no newline: the next event starts its own line
+            log.event("closing")
+        finally:
+            log.close()
+        txt = path.read_text(encoding="utf-8")
+        self.assertIn("app 9.9", txt)
+        self.assertRegex(txt, r"\d\d:\d\d:\d\d +\d+\.\d{3} command centre")
+        self.assertIn("out| engine: first camera frame", txt)
+        self.assertIn("out| Traceback: boom\n", txt)
+        self.assertIn("=== log closed ===", txt)
+        self.assertNotIn("ignored while off", txt)
+        self.assertNotEqual(type(sys.stdout).__name__, "_Tee")          # streams restored
+
+    def test_keeps_the_newest_files(self):
+        from debuglog import DebugLog
+        for i in range(7):
+            (self.dir / ("debug-2026010%d-000000.log" % i)).write_text("x")
+        log = DebugLog()
+        path = log.start([], folder=self.dir, keep=5, tee=False)
+        log.close()
+        names = sorted(p.name for p in self.dir.glob("debug-*.log"))
+        self.assertEqual(len(names), 5)
+        self.assertIn(path.name, names)
+        self.assertNotIn("debug-20260100-000000.log", names)
+
+    def test_settings_diff_names_the_changed_keys(self):
+        from debuglog import settings_diff
+        old = {"curves": {"yaw": {"points_pos": [[1, 2]]}}, "predict_ms": 20.0, "bind": {"pause": ""}}
+        new = {"curves": {"yaw": {"points_pos": [[1, 3]]}}, "predict_ms": 20.0, "bind": {"pause": "key 19"}}
+        d = settings_diff(old, new)
+        self.assertEqual(len(d), 2)
+        self.assertTrue(d[0].startswith("bind.pause: \"\" -> \"key 19\""))
+        self.assertTrue(d[1].startswith("curves.yaw.points_pos: [[1, 2]] -> [[1, 3]]"))
+
+    def test_hook_lines_from_dcs_log(self):
+        from debuglog import dcs_log_lines
+        (self.dir / "Logs").mkdir()
+        (self.dir / "Logs" / "dcs.log").write_text("a\n2026 INFO HEADTRACK (Main): hook 1 loaded\nb\n", encoding="utf-8")
+        self.assertEqual(dcs_log_lines(self.dir), ["2026 INFO HEADTRACK (Main): hook 1 loaded"])
+        self.assertEqual(dcs_log_lines(self.dir / "missing"), [])
 
 
 if __name__ == "__main__":

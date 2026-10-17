@@ -103,15 +103,66 @@ class StillGate:
         return dict(self.y)
 
 
+class Accela:
+    """opentrack's default filter ('Accela'), rebuilt: a follower whose SPEED depends on how far it is
+    behind the input. Small gaps (tremble) -> it creeps (tremble is smeared out, never blocked, so small
+    real movements still arrive, gently); big gaps -> it catches up fast. Never overshoots.
+
+    gap / smoothing -> speed (deg/s for rotation, cm/s for position), piecewise linear between opentrack's
+    gain points, continued along the last segment beyond them. Dead zone taken off the gap first.
+    Defaults = opentrack's defaults: rotation smoothing 1.5 deg, position 1.0 cm, dead zones 0.03 / 0.1."""
+
+    ROT_GAINS = [(0.0, 0.0), (0.5, 0.4), (1.0, 1.5), (1.5, 8.0), (2.5, 35.0), (5.0, 100.0), (8.0, 200.0), (9.0, 300.0)]
+    POS_GAINS = [(0.0, 0.0), (0.33, 0.375), (0.66, 0.75), (1.33, 2.25), (1.66, 4.5), (2.0, 7.5), (3.0, 24.0),
+                 (5.0, 60.0), (7.0, 110.0), (8.0, 150.0), (9.0, 200.0)]
+
+    def __init__(self, rot_smoothing: float = 1.5, pos_smoothing: float = 1.0,
+                 rot_dz: float = 0.03, pos_dz: float = 0.1):
+        self.rot_smoothing, self.pos_smoothing, self.rot_dz, self.pos_dz = rot_smoothing, pos_smoothing, rot_dz, pos_dz
+        self.y: dict | None = None
+
+    def reset(self):
+        self.y = None
+
+    @staticmethod
+    def _gain(table, x: float) -> float:
+        for (x0, y0), (x1, y1) in zip(table, table[1:]):
+            if x <= x1:
+                return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+        (x0, y0), (x1, y1) = table[-2], table[-1]
+        return y1 + (y1 - y0) / (x1 - x0) * (x - x1)          # beyond the table: keep the last slope
+
+    def step(self, target: dict, dt: float) -> dict:
+        if self.y is None or dt <= 0:
+            self.y = dict(target)
+            return dict(self.y)
+        for a, v in target.items():
+            lin = a in ("x", "y", "z")
+            sm, dz, table = ((self.pos_smoothing, self.pos_dz, self.POS_GAINS) if lin
+                             else (self.rot_smoothing, self.rot_dz, self.ROT_GAINS))
+            gap = v - self.y[a]
+            g = abs(gap) - dz
+            if g <= 0:
+                continue
+            speed = self._gain(table, g / max(sm, 1e-6))
+            move = min(speed * dt, abs(gap))                     # never past the input
+            self.y[a] += move if gap > 0 else -move
+        return dict(self.y)
+
+
 class OutputPump(threading.Thread):
     """Sends the view at `hz` (240) instead of the camera's 60: between camera frames it continues along
     the view's own velocity (at most 1.5 frames ahead - no waiting, so no added delay) and a very short
     smoothing (tau_ms) removes the kinks where a new frame arrives. DCS then gets a fresh, smooth value
     every one of its frames instead of a 60 Hz staircase (the remaining 'choppy')."""
 
-    def __init__(self, send, hz: float = 240.0, tau_ms: float = 6.0):
+    def __init__(self, send, hz: float = 240.0, tau_ms: float = 6.0, accela: "Accela | None" = None):
         super().__init__(daemon=True, name="output-pump")
         self.send, self.dt, self.tau = send, 1.0 / hz, tau_ms / 1000.0
+        # with an Accela, it follows the latest sample at `hz` instead of extrapolating (opentrack's way:
+        # the filter runs at ~250 Hz between camera frames, so the view glides)
+        self.accela = accela
+        self.last: dict | None = None
         self._lock = threading.Lock()
         self._sample = None          # (view dict, time, velocity dict, frame interval)
         self._active = False
@@ -138,13 +189,20 @@ class OutputPump(threading.Thread):
                 smp, active = self._sample, self._active
             if smp is not None:
                 view, t, vel, interval = smp
-                ahead = min(max(_t.perf_counter() - t, 0.0), 1.5 * interval)
-                target = {a: view[a] + vel[a] * ahead for a in view}
-                if self._y is None or not active:
-                    self._y = target
+                acc = self.accela
+                if acc is not None:
+                    if not active:
+                        acc.reset()                       # resume after pause: start at the head, no glide
+                    self._y = acc.step(view, self.dt)
                 else:
-                    k = 1.0 - math.exp(-self.dt / self.tau) if self.tau > 0 else 1.0
-                    self._y = {a: self._y[a] + k * (target[a] - self._y[a]) for a in target}
+                    ahead = min(max(_t.perf_counter() - t, 0.0), 1.5 * interval)
+                    target = {a: view[a] + vel[a] * ahead for a in view}
+                    if self._y is None or not active:
+                        self._y = target
+                    else:
+                        k = 1.0 - math.exp(-self.dt / self.tau) if self.tau > 0 else 1.0
+                        self._y = {a: self._y[a] + k * (target[a] - self._y[a]) for a in target}
+                self.last = dict(self._y)
                 try:
                     self.send(dict(self._y), active)
                 except Exception:

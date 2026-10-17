@@ -12,7 +12,7 @@ import numpy as np
 import curves as curvemod
 from camera import Camera
 from dcsout import DcsOutput
-from filters import OutputPump, PoseFilter, Predictor, StillGate
+from filters import Accela, OutputPump, PoseFilter, Predictor, StillGate
 from metrics import Mean, Rate, StillTest
 from output import OpentrackUdp
 from posemath import AXIS_SIGN, orthonormalize, relative_pose
@@ -20,6 +20,7 @@ from rigid import RigidPose, build_model, points, refine_model
 from tracker import FaceTracker
 
 from appdirs import data_dir, migrate_dev_data
+from debuglog import dlog
 from devices import camera_index
 
 migrate_dev_data()
@@ -42,14 +43,19 @@ DEFAULTS = {
     "output": "dcs",                # "dcs" (HeadTracker hook, no TrackIR) | "opentrack" (UDP)
     "curves": {},                   # per-axis overrides of curves.DEFAULTS
     "bind": {"centre": "", "pause": ""},
-    "still_gate": {"deg": 0.2, "cm": 0.1},   # view-level hysteresis against amplified tremble
+    "still_gate": {"deg": 0.2, "cm": 0.1},   # view-level hysteresis (only in 'extrapolate' mode)
+    # final smoothing at 240 Hz: 'accela' = opentrack's default filter (what the user had through opentrack),
+    # 'extrapolate' = the earlier velocity extrapolation + still-gate
+    "smoothing": {"mode": "accela", "rot": 1.5, "pos": 1.0, "rot_dz": 0.03, "pos_dz": 0.1},
+    "debug_log": False,             # write %APPDATA%\HeadTracker\debug\debug-*.log (from the next start)
 }
+HEALTH_S = 5.0                      # debug log: one health line this often
 
 
 def load_settings() -> dict:
     s = json.loads(json.dumps(DEFAULTS))
     try:
-        user = json.loads(SETTINGS.read_text(encoding="utf-8"))
+        user = json.loads(SETTINGS.read_text(encoding="utf-8-sig"))     # -sig: a Notepad / PowerShell BOM
         for k, v in user.items():
             if isinstance(v, dict) and isinstance(s.get(k), dict):
                 s[k].update(v)
@@ -112,6 +118,7 @@ class Engine(threading.Thread):
                 kw["index"] = camera_index(kw["name"], int(self.s["camera"].get("index", 0)))
             self.cam_ok = self.cam.set(**kw)
             self.s["camera"].update(kw)
+            dlog.event("camera set %s -> open=%s info=%s" % (kw, self.cam_ok, self.cam.info))
             return self.cam_ok
 
     def stop(self):
@@ -125,14 +132,26 @@ class Engine(threading.Thread):
             self.error = "Camera not available - is another tracker (opentrack NeuralNet?) using it?"
             with self._lock:
                 self._snap = {"status": "NO CAMERA", "error": self.error}
+            dlog.event("engine: " + self.error)
             return
         tracker = FaceTracker()
         flt = PoseFilter(rot=tuple(s["filter"]["rot"]), pos=tuple(s["filter"]["pos"]))
         pred = Predictor(lead_ms=s["predict_ms"])
         gate = StillGate(s["still_gate"]["deg"], s["still_gate"]["cm"])
-        # 240 Hz to DCS: smooth between camera frames (curves read live so the editor applies at once)
-        pump = OutputPump(lambda view, active: self.dcs.send(
-            curvemod.normalize(view, curvemod.merged(s.get("curves"))), active))
+        # 240 Hz to DCS: smooth between camera frames (curves read live so the editor applies at once).
+        # accela mode: the pump gets the head POSE and runs Accela, the curves come after (opentrack's
+        # order); extrapolate mode: it gets the shaped + gated VIEW.
+        def pump_send(y, active):
+            cv = curvemod.merged(s.get("curves"))
+            self.dcs.send(curvemod.normalize(curvemod.shaped_pose(y, cv) if pump.accela else y, cv), active)
+
+        def make_accela():
+            sm = s["smoothing"]
+            if sm.get("mode") != "accela":
+                return None
+            return Accela(sm["rot"], sm["pos"], sm["rot_dz"], sm["pos_dz"])
+
+        pump = OutputPump(pump_send, accela=make_accela())
         pump.start()
         view_hist: list = []          # view after curves + gate, for the still test's view jitter
         udp = OpentrackUdp(s["udp"]["host"], s["udp"]["port"])
@@ -145,6 +164,8 @@ class Engine(threading.Thread):
         history: list = []
         calib = None                       # {"t0", "clouds", "mps", "w", "h"}
         result = ""
+        prev_status, prev_link, prev_result = "", None, ""
+        hc = {"t": time.perf_counter(), "frames": 0, "face": 0, "seq": 0, "holds": 0}     # debug log health window
         try:
             while not self._stop.is_set():
                 with self._lock:
@@ -152,6 +173,7 @@ class Engine(threading.Thread):
                 with self._cam_lock:
                     frame, t_cap, n = cam.latest()
                 for name, args in cmds:
+                    dlog.event("command %s%s" % (name, (" " + repr(args)) if args else ""))
                     if name == "centre":
                         centre = None
                     elif name == "test":
@@ -165,12 +187,20 @@ class Engine(threading.Thread):
                         pred.lead_ms = s["predict_ms"]
                     elif name == "gate":
                         gate.thr_deg, gate.thr_cm = s["still_gate"]["deg"], s["still_gate"]["cm"]
+                    elif name == "smoothing":
+                        sm = s["smoothing"]
+                        if sm.get("mode") == "accela" and pump.accela is not None:
+                            pump.accela.rot_smoothing, pump.accela.pos_smoothing = sm["rot"], sm["pos"]
+                            pump.accela.rot_dz, pump.accela.pos_dz = sm["rot_dz"], sm["pos_dz"]
+                        else:
+                            pump.accela = make_accela()
                     elif name == "source":
                         centre = None
                         if self.rigid:
                             self.rigid.reset()
                     elif name == "pause":
                         self.paused = not self.paused if not args else bool(args[0])
+                        dlog.event("paused" if self.paused else "resumed")
                 if frame is None or n == last_n:
                     time.sleep(0.001)
                     continue
@@ -214,14 +244,21 @@ class Engine(threading.Thread):
                         if self.rigid:
                             self.rigid.reset()
                 proc.add((time.perf_counter() - t0) * 1000)
+                hc["frames"] += 1
+                hc["face"] += m is not None
                 curves = curvemod.merged(s.get("curves"))
-                view = gate(curvemod.shaped_pose(out, curves))     # what DCS gets, in deg / cm
+                if pump.accela is not None:
+                    # what DCS gets: Accela's output (at 240 Hz) through the curves; the gate is not used
+                    view = curvemod.shaped_pose(pump.last or out, curves)
+                else:
+                    view = gate(curvemod.shaped_pose(out, curves))     # what DCS gets, in deg / cm
                 if s.get("output") == "opentrack":
                     if not self.paused:          # paused: opentrack keeps the last pose (it has no mouse hand-over)
                         udp.send(out)
                 else:
                     # paused -> 'inactive' packets: the hook stops driving the view, DCS's mouse look takes over
-                    pump.set(view, time.perf_counter(), active=not self.paused and status != "LOST")
+                    pump.set(out if pump.accela is not None else view, time.perf_counter(),
+                             active=not self.paused and status != "LOST")
                 if still.running:
                     view_hist.append(view)
                 rate.tick()
@@ -241,6 +278,34 @@ class Engine(threading.Thread):
                     with open(RESULTS, "a", encoding="utf-8") as fh:
                         fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + result + "\n")
                     still.result = None
+                if dlog.enabled:
+                    if status != prev_status:
+                        # short face drop-outs (TRACKING <-> HOLD) are only counted, in the health line
+                        if {prev_status, status} == {"TRACKING", "HOLD"}:
+                            hc["holds"] += status == "HOLD"
+                        else:
+                            dlog.event("status %s -> %s" % (prev_status or "-", status))
+                        prev_status = status
+                    link = (self.dcs.connected(), self.dcs.status["unit"], self.dcs.status["applying"])
+                    if link != prev_link:
+                        dlog.event("dcs link: %s, unit %s, %s" % ("connected" if link[0] else "no hook answering",
+                                   link[1] or "-", "applying head tracking" if link[2] else "not applying"))
+                        prev_link = link
+                    if result != prev_result:
+                        dlog.event("result: " + result)
+                        prev_result = result
+                    if now - hc["t"] >= HEALTH_S:
+                        dt = now - hc["t"]
+                        sent = (self.dcs.seq - hc["seq"]) / dt
+                        dlog.event(
+                            "health: cam %.1f fps, track %.1f Hz, model %.1f ms, latency %.1f ms, face %d%% (%d/%d), holds %d, %s%s,"
+                            " out %s/%s, head yaw %+.1f pitch %+.1f roll %+.1f x %+.1f y %+.1f z %+.1f,"
+                            " view yaw %+.1f pitch %+.1f roll %+.1f, to dcs %.0f/s, hook frames %d"
+                            % (cam_rate.hz, rate.hz, proc.value, lat.value, 100 * hc["face"] // max(hc["frames"], 1),
+                               hc["face"], hc["frames"], hc["holds"], status, " PAUSED" if self.paused else "",
+                               s["source"], s.get("output"), out["yaw"], out["pitch"], out["roll"], out["x"], out["y"],
+                               out["z"], view["yaw"], view["pitch"], view["roll"], sent, self.dcs.status["frames"]))
+                        hc.update(t=now, frames=0, face=0, seq=self.dcs.seq, holds=0)
                 history.append((now, out["yaw"], out["pitch"], out["roll"]))
                 while history and now - history[0][0] > 6.0:
                     history.pop(0)

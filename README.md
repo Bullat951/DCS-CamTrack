@@ -72,7 +72,13 @@ If an axis moves the wrong way, tick **Invert in DCS** for it. *Full scale* is h
   - automatic exposure / focus hunting is a big jitter source.
 - **Camera position**: at or a little below eye level tracks looking down best.
 - **Still test** (Tracking tab) measures jitter in your head pose and in the DCS view.
-- Problems: `%APPDATA%\HeadTracker\ui.log`.
+- **Problems**: turn on the **debug log** (Setup tab -> *Write a debug log*), restart Head Tracker,
+  reproduce the problem, close Head Tracker and send the newest file from **Open log folder**
+  (`%APPDATA%\HeadTracker\debug\debug-<date>-<time>.log`, the last 5 are kept). It has the PC, cameras,
+  DCS folder / hook state and settings at start, every action (centre, pause, hotkeys, settings changes),
+  tracking / DCS-link changes, errors, a health line every 5 s (fps, face found, timings, head and view
+  values, packets to DCS) and the hook's lines from `dcs.log`. Crashes of the packaged exe also go to
+  `%APPDATA%\HeadTracker\ui.log`.
 
 ## How it works (for the curious)
 

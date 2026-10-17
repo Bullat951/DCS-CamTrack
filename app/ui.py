@@ -33,7 +33,8 @@ from devices import MODES, dcs_folders, list_cameras, mode_label  # noqa: E402
 
 VERSION = "0.1.0"
 from curves import AXES as CURVE_AXES, import_opentrack, merged  # noqa: E402
-from dcsout import hook_state, install_hook  # noqa: E402
+from dcsout import default_dcs_folder, hook_state, install_hook  # noqa: E402
+from debuglog import dcs_log_lines, dlog, system_header  # noqa: E402
 from engine import AXES, Engine, load_settings, save_settings  # noqa: E402
 from hotkeys import Hotkeys, describe  # noqa: E402
 
@@ -54,6 +55,12 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.s = load_settings()
+        if self.s.get("debug_log"):
+            try:
+                dlog.start(system_header(VERSION, self.s))
+                self._log_dcs("dcs.log at start")
+            except OSError as e:
+                print("debug log could not start: %r" % e)
         self.engine = Engine(self.s)
         self.engine.start()
         root.title("Head Tracker")
@@ -131,6 +138,19 @@ class App:
                                     self.s["still_gate"]["deg"], self.set_gate)
         self.gate_cm = self.slider(f, "Still gate - position (cm)", 0.0, 0.5, self.s["still_gate"]["cm"], self.set_gate)
 
+        f = ttk.LabelFrame(right, text="Final smoothing (240 Hz, before the curves)")
+        f.pack(fill="x", pady=(0, 6))
+        sm = self.s["smoothing"]
+        self.sm_mode = tk.StringVar(value=sm.get("mode", "accela"))
+        ttk.Radiobutton(f, text="Accela - opentrack's default filter (glides, no sticky gate)", value="accela",
+                        variable=self.sm_mode, command=self.set_smoothing).pack(anchor="w", padx=6)
+        ttk.Radiobutton(f, text="Extrapolate + still gate (the earlier way)", value="extrapolate",
+                        variable=self.sm_mode, command=self.set_smoothing).pack(anchor="w", padx=6)
+        self.sm_rot = self.slider(f, "Accela rotation smoothing (opentrack default 1.5)", 0.05, 2.5, sm["rot"], self.set_smoothing)
+        self.sm_pos = self.slider(f, "Accela position smoothing (default 1.0)", 0.05, 1.5, sm["pos"], self.set_smoothing)
+        self.sm_rdz = self.slider(f, "Accela rotation dead zone (deg, default 0.03)", 0.0, 0.2, sm["rot_dz"], self.set_smoothing)
+        self.sm_pdz = self.slider(f, "Accela position dead zone (cm, default 0.1)", 0.0, 1.0, sm["pos_dz"], self.set_smoothing)
+
         # ---- camera
         f = ttk.LabelFrame(right, text="Camera")
         f.pack(fill="x", pady=(0, 6))
@@ -158,8 +178,9 @@ class App:
 
         if self.s.get("start_minimized"):
             root.iconify()
-        self.hotkeys = Hotkeys({"centre": lambda: self.engine.command("centre"),
-                                "pause": lambda: self.engine.command("pause")}, self.s["bind"])
+        self.hotkeys = Hotkeys({"centre": lambda: self.hotkey("centre"),
+                                "pause": lambda: self.hotkey("pause")}, self.s["bind"])
+        dlog.event("hotkeys: %s" % self.s["bind"])
         self.hotkeys.start()
         self.tick()
 
@@ -207,10 +228,48 @@ class App:
                          "to install it. Keep opentrack / TrackIR closed when you start DCS.",
                  bg=PANEL, fg=MUTED, font=("Segoe UI", 8), justify="left").pack(anchor="w", padx=6, pady=(0, 6))
 
+        f = ttk.LabelFrame(tab, text="Debug log")
+        f.pack(fill="x", pady=(0, 6))
+        self.debug_var = tk.BooleanVar(value=bool(self.s.get("debug_log")))
+        row = tk.Frame(f, bg=PANEL)
+        row.pack(fill="x", padx=6, pady=(4, 2))
+        ttk.Checkbutton(row, text="Write a debug log (from the next start)", variable=self.debug_var,
+                        command=self.set_debug).pack(side="left")
+        ttk.Button(row, text="Open log folder", command=self.open_debug_folder).pack(side="right")
+        self.debug_lbl = tk.Label(f, text="", bg=PANEL, fg=MUTED, font=("Segoe UI", 8), justify="left", anchor="w")
+        self.debug_lbl.pack(fill="x", padx=6, pady=(0, 6))
+        self.set_debug(initial=True)
+
         f = ttk.LabelFrame(tab, text="About")
         f.pack(fill="x")
         tk.Label(f, text="Head Tracker %s - settings in %s" % (VERSION, data_dir()), bg=PANEL, fg=MUTED,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=6, pady=4)
+
+    def set_debug(self, initial=False):
+        if not initial:
+            self.s["debug_log"] = bool(self.debug_var.get())
+        on, want = dlog.enabled, bool(self.s.get("debug_log"))
+        if on:
+            txt = "Writing: %s%s" % (dlog.path, "\nOff from the next start." if not want else
+                                     "\nSend this file for troubleshooting (after closing Head Tracker).")
+        else:
+            txt = ("Restart Head Tracker to start the log." if want else
+                   "For troubleshooting: tick, restart, reproduce the problem, close, send the newest file.")
+        self.debug_lbl.config(text=txt, fg=ACCENT if on else (WARN if want else MUTED))
+
+    def open_debug_folder(self):
+        d = data_dir() / "debug"
+        d.mkdir(parents=True, exist_ok=True)
+        _os.startfile(d)
+
+    def hotkey(self, name):
+        dlog.event("hotkey " + name)
+        self.engine.command(name)
+
+    def _log_dcs(self, title):
+        if dlog.enabled:
+            lines = dcs_log_lines(self.s.get("dcs_folder") or default_dcs_folder())
+            dlog.event("%s: %d HEADTRACK line(s)%s" % (title, len(lines), "".join("\n    " + ln for ln in lines)))
 
     def apply_camera_choice(self):
         w, h, fps = self._modes[self.cam_mode.get()]
@@ -417,6 +476,12 @@ class App:
         self.s["predict_ms"] = round(self.pred.get())
         self.engine.command("predict")
 
+    def set_smoothing(self):
+        self.s["smoothing"] = {"mode": self.sm_mode.get(), "rot": round(self.sm_rot.get(), 3),
+                               "pos": round(self.sm_pos.get(), 3), "rot_dz": round(self.sm_rdz.get(), 3),
+                               "pos_dz": round(self.sm_pdz.get(), 3)}
+        self.engine.command("smoothing")
+
     def set_gate(self):
         self.s["still_gate"] = {"deg": round(self.gate_deg.get(), 3), "cm": round(self.gate_cm.get(), 3)}
         self.engine.command("gate")
@@ -490,6 +555,8 @@ class App:
             # autosave (a crash must not lose curves / bindings)
             js = json.dumps(self.s, sort_keys=True)
             if js != getattr(self, "_saved_js", None):
+                if dlog.enabled and getattr(self, "_saved_js", None):
+                    dlog.settings_changed(json.loads(self._saved_js), json.loads(js))
                 try:
                     save_settings(self.s)
                     self._saved_js = js
@@ -538,9 +605,12 @@ class App:
 
     def close(self):
         save_settings(self.s)
+        dlog.event("closing")
         self.hotkeys.stop()
         self.engine.stop()
         self.engine.join(timeout=2.0)
+        self._log_dcs("dcs.log at close")
+        dlog.close()
         self.root.destroy()
 
 
